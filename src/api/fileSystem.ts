@@ -1,52 +1,32 @@
-// Remove Node.js specific imports
-// import { promises as fs } from 'fs';
-// import path from 'path';
-import chokidar from 'chokidar';
-import mime from 'mime-types';
+// Mock implementation for file system operations
 import EventEmitter from 'events';
+import mime from 'mime-types';
 
 // Cache for file contents
 const fileCache = new Map<string, { content: string; timestamp: number }>();
 const CACHE_TTL = 5 * 60 * 1000; // 5 minutes
 const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
 
+// Mock file system data
+const mockFileSystem = {
+  files: new Map<string, string>(),
+  directories: new Set<string>(),
+};
+
 // Event emitter for file changes
 export const fileWatcher = new EventEmitter();
-let watcher: chokidar.FSWatcher | null = null;
+let watcher: any = null;
 
 // Initialize file watcher
 export function initFileWatcher(dir: string = '.') {
-  if (watcher) {
-    watcher.close();
-  }
-  
-  // In browser environment, we can't use chokidar directly
-  // Instead, we'll use a polling mechanism with fetch
-  console.log('File watcher initialized in browser environment');
-  
-  // Set up a polling interval to check for file changes
-  const pollInterval = setInterval(async () => {
-    try {
-      const response = await fetch('/api/list-files');
-      if (response.ok) {
-        const files = await response.json();
-        // Process file changes
-        fileWatcher.emit('filesUpdated', files);
-      }
-    } catch (error) {
-      console.error('Error polling for file changes:', error);
-    }
-  }, 5000); // Poll every 5 seconds
-  
-  // Store the interval ID so we can clear it later
-  return () => clearInterval(pollInterval);
+  console.log('Mock file watcher initialized');
+  return () => {};
 }
 
 // Get file type based on extension
 export function getFileType(filePath: string): string {
   // Extract extension from path
   const ext = filePath.split('.').pop()?.toLowerCase() || '';
-  const mimeType = mime.lookup(filePath) || 'text/plain';
   
   // Map common extensions to language types for syntax highlighting
   const languageMap: Record<string, string> = {
@@ -81,16 +61,8 @@ export function getFileType(filePath: string): string {
 
 // API functions that will be called from the frontend
 export async function listFiles(dir: string = '.'): Promise<string[]> {
-  try {
-    const response = await fetch('/api/list-files');
-    if (!response.ok) {
-      throw new Error('Failed to list files');
-    }
-    return await response.json();
-  } catch (error) {
-    console.error('Error listing files:', error);
-    return [];
-  }
+  // Return mock file list
+  return Array.from(mockFileSystem.files.keys());
 }
 
 export async function readFile(filePath: string): Promise<string> {
@@ -103,13 +75,8 @@ export async function readFile(filePath: string): Promise<string> {
       return cached.content;
     }
     
-    const response = await fetch(`/api/read-file?path=${encodeURIComponent(filePath)}`);
-    if (!response.ok) {
-      throw new Error('Failed to read file');
-    }
-    
-    const data = await response.json();
-    const content = data.content;
+    // Get content from mock file system
+    const content = mockFileSystem.files.get(filePath) || '';
     
     // Update cache
     fileCache.set(filePath, { content, timestamp: now });
@@ -123,20 +90,14 @@ export async function readFile(filePath: string): Promise<string> {
 
 export async function writeFile(filePath: string, content: string): Promise<void> {
   try {
-    const response = await fetch('/api/write-file', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ path: filePath, content }),
-    });
-    
-    if (!response.ok) {
-      throw new Error('Failed to write file');
-    }
+    // Update mock file system
+    mockFileSystem.files.set(filePath, content);
     
     // Update cache
     fileCache.set(filePath, { content, timestamp: Date.now() });
+    
+    // Emit file changed event
+    fileWatcher.emit('fileChanged', filePath);
   } catch (error) {
     console.error(`Error writing file ${filePath}:`, error);
     throw error;
@@ -145,16 +106,14 @@ export async function writeFile(filePath: string, content: string): Promise<void
 
 export async function deleteFile(filePath: string): Promise<void> {
   try {
-    const response = await fetch(`/api/delete-file?path=${encodeURIComponent(filePath)}`, {
-      method: 'DELETE',
-    });
-    
-    if (!response.ok) {
-      throw new Error('Failed to delete file');
-    }
+    // Remove from mock file system
+    mockFileSystem.files.delete(filePath);
     
     // Remove from cache
     fileCache.delete(filePath);
+    
+    // Emit file removed event
+    fileWatcher.emit('fileRemoved', filePath);
   } catch (error) {
     console.error(`Error deleting file ${filePath}:`, error);
     throw error;
@@ -163,17 +122,11 @@ export async function deleteFile(filePath: string): Promise<void> {
 
 export async function createDirectory(dirPath: string): Promise<void> {
   try {
-    const response = await fetch('/api/create-directory', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ path: dirPath }),
-    });
+    // Add to mock directories
+    mockFileSystem.directories.add(dirPath);
     
-    if (!response.ok) {
-      throw new Error('Failed to create directory');
-    }
+    // Emit directory created event
+    fileWatcher.emit('directoryCreated', dirPath);
   } catch (error) {
     console.error(`Error creating directory ${dirPath}:`, error);
     throw error;
@@ -182,35 +135,45 @@ export async function createDirectory(dirPath: string): Promise<void> {
 
 // API route handlers - these will be used by the server
 export async function handleListFiles(req: Request): Promise<Response> {
-  // This would be implemented on the server side
-  return new Response(JSON.stringify([]), {
+  return new Response(JSON.stringify(Array.from(mockFileSystem.files.keys())), {
     headers: { 'Content-Type': 'application/json' }
   });
 }
 
 export async function handleReadFile(req: Request): Promise<Response> {
-  // This would be implemented on the server side
-  return new Response(JSON.stringify({ content: '', fileType: 'plaintext' }), {
+  const url = new URL(req.url);
+  const filePath = url.searchParams.get('path') || '';
+  const content = mockFileSystem.files.get(filePath) || '';
+  const fileType = getFileType(filePath);
+  
+  return new Response(JSON.stringify({ content, fileType }), {
     headers: { 'Content-Type': 'application/json' }
   });
 }
 
 export async function handleWriteFile(req: Request): Promise<Response> {
-  // This would be implemented on the server side
+  const { path, content } = await req.json();
+  mockFileSystem.files.set(path, content);
+  
   return new Response(JSON.stringify({ success: true }), {
     headers: { 'Content-Type': 'application/json' }
   });
 }
 
 export async function handleDeleteFile(req: Request): Promise<Response> {
-  // This would be implemented on the server side
+  const url = new URL(req.url);
+  const filePath = url.searchParams.get('path') || '';
+  mockFileSystem.files.delete(filePath);
+  
   return new Response(JSON.stringify({ success: true }), {
     headers: { 'Content-Type': 'application/json' }
   });
 }
 
 export async function handleCreateDirectory(req: Request): Promise<Response> {
-  // This would be implemented on the server side
+  const { path } = await req.json();
+  mockFileSystem.directories.add(path);
+  
   return new Response(JSON.stringify({ success: true }), {
     headers: { 'Content-Type': 'application/json' }
   });
