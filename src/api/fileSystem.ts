@@ -2,7 +2,7 @@ import { promises as fs } from 'fs';
 import path from 'path';
 import chokidar from 'chokidar';
 import mime from 'mime-types';
-import { EventEmitter } from 'events';
+import EventEmitter from 'events';
 
 // Cache for file contents
 const fileCache = new Map<string, { content: string; timestamp: number }>();
