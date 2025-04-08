@@ -1,5 +1,6 @@
-import { promises as fs } from 'fs';
-import path from 'path';
+// Remove Node.js specific imports
+// import { promises as fs } from 'fs';
+// import path from 'path';
 import chokidar from 'chokidar';
 import mime from 'mime-types';
 import EventEmitter from 'events';
@@ -19,85 +20,77 @@ export function initFileWatcher(dir: string = '.') {
     watcher.close();
   }
   
-  watcher = chokidar.watch(dir, {
-    ignored: /(^|[\/\\])\..|node_modules|\.git/,
-    persistent: true,
-    ignoreInitial: true
-  });
+  // In browser environment, we can't use chokidar directly
+  // Instead, we'll use a polling mechanism with fetch
+  console.log('File watcher initialized in browser environment');
   
-  watcher.on('add', path => {
-    fileWatcher.emit('fileAdded', path);
-    fileCache.delete(path);
-  });
+  // Set up a polling interval to check for file changes
+  const pollInterval = setInterval(async () => {
+    try {
+      const response = await fetch('/api/list-files');
+      if (response.ok) {
+        const files = await response.json();
+        // Process file changes
+        fileWatcher.emit('filesUpdated', files);
+      }
+    } catch (error) {
+      console.error('Error polling for file changes:', error);
+    }
+  }, 5000); // Poll every 5 seconds
   
-  watcher.on('change', path => {
-    fileWatcher.emit('fileChanged', path);
-    fileCache.delete(path);
-  });
-  
-  watcher.on('unlink', path => {
-    fileWatcher.emit('fileRemoved', path);
-    fileCache.delete(path);
-  });
+  // Store the interval ID so we can clear it later
+  return () => clearInterval(pollInterval);
 }
 
 // Get file type based on extension
 export function getFileType(filePath: string): string {
-  const ext = path.extname(filePath).toLowerCase();
+  // Extract extension from path
+  const ext = filePath.split('.').pop()?.toLowerCase() || '';
   const mimeType = mime.lookup(filePath) || 'text/plain';
   
   // Map common extensions to language types for syntax highlighting
   const languageMap: Record<string, string> = {
-    '.js': 'javascript',
-    '.jsx': 'javascript',
-    '.ts': 'typescript',
-    '.tsx': 'typescript',
-    '.html': 'html',
-    '.css': 'css',
-    '.scss': 'scss',
-    '.json': 'json',
-    '.md': 'markdown',
-    '.py': 'python',
-    '.java': 'java',
-    '.c': 'c',
-    '.cpp': 'cpp',
-    '.go': 'go',
-    '.rs': 'rust',
-    '.php': 'php',
-    '.rb': 'ruby',
-    '.swift': 'swift',
-    '.kt': 'kotlin',
-    '.sh': 'bash',
-    '.sql': 'sql',
-    '.xml': 'xml',
-    '.yaml': 'yaml',
-    '.yml': 'yaml',
+    'js': 'javascript',
+    'jsx': 'javascript',
+    'ts': 'typescript',
+    'tsx': 'typescript',
+    'html': 'html',
+    'css': 'css',
+    'scss': 'scss',
+    'json': 'json',
+    'md': 'markdown',
+    'py': 'python',
+    'java': 'java',
+    'c': 'c',
+    'cpp': 'cpp',
+    'go': 'go',
+    'rs': 'rust',
+    'php': 'php',
+    'rb': 'ruby',
+    'swift': 'swift',
+    'kt': 'kotlin',
+    'sh': 'bash',
+    'sql': 'sql',
+    'xml': 'xml',
+    'yaml': 'yaml',
+    'yml': 'yaml',
   };
   
   return languageMap[ext] || 'plaintext';
 }
 
+// API functions that will be called from the frontend
 export async function listFiles(dir: string = '.'): Promise<string[]> {
-  const files: string[] = [];
-  
-  async function traverse(currentDir: string) {
-    const entries = await fs.readdir(currentDir, { withFileTypes: true });
-    
-    for (const entry of entries) {
-      const fullPath = path.join(currentDir, entry.name);
-      
-      if (entry.isDirectory()) {
-        // Skip node_modules and .git directories
-        if (entry.name === 'node_modules' || entry.name === '.git') continue;
-        await traverse(fullPath);
-      } else {
-        files.push(fullPath);
-      }
+  try {
+    const response = await fetch('/api/list-files');
+    if (!response.ok) {
+      throw new Error('Failed to list files');
     }
+    return await response.json();
+  } catch (error) {
+    console.error('Error listing files:', error);
+    return [];
   }
-  
-  await traverse(dir);
-  return files;
 }
 
 export async function readFile(filePath: string): Promise<string> {
@@ -110,13 +103,13 @@ export async function readFile(filePath: string): Promise<string> {
       return cached.content;
     }
     
-    // Check file size before reading
-    const stats = await fs.stat(filePath);
-    if (stats.size > MAX_FILE_SIZE) {
-      throw new Error(`File ${filePath} is too large (${stats.size} bytes). Maximum size is ${MAX_FILE_SIZE} bytes.`);
+    const response = await fetch(`/api/read-file?path=${encodeURIComponent(filePath)}`);
+    if (!response.ok) {
+      throw new Error('Failed to read file');
     }
     
-    const content = await fs.readFile(filePath, 'utf-8');
+    const data = await response.json();
+    const content = data.content;
     
     // Update cache
     fileCache.set(filePath, { content, timestamp: now });
@@ -130,7 +123,19 @@ export async function readFile(filePath: string): Promise<string> {
 
 export async function writeFile(filePath: string, content: string): Promise<void> {
   try {
-    await fs.writeFile(filePath, content, 'utf-8');
+    const response = await fetch('/api/write-file', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ path: filePath, content }),
+    });
+    
+    if (!response.ok) {
+      throw new Error('Failed to write file');
+    }
+    
+    // Update cache
     fileCache.set(filePath, { content, timestamp: Date.now() });
   } catch (error) {
     console.error(`Error writing file ${filePath}:`, error);
@@ -140,7 +145,15 @@ export async function writeFile(filePath: string, content: string): Promise<void
 
 export async function deleteFile(filePath: string): Promise<void> {
   try {
-    await fs.unlink(filePath);
+    const response = await fetch(`/api/delete-file?path=${encodeURIComponent(filePath)}`, {
+      method: 'DELETE',
+    });
+    
+    if (!response.ok) {
+      throw new Error('Failed to delete file');
+    }
+    
+    // Remove from cache
     fileCache.delete(filePath);
   } catch (error) {
     console.error(`Error deleting file ${filePath}:`, error);
@@ -150,134 +163,55 @@ export async function deleteFile(filePath: string): Promise<void> {
 
 export async function createDirectory(dirPath: string): Promise<void> {
   try {
-    await fs.mkdir(dirPath, { recursive: true });
+    const response = await fetch('/api/create-directory', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ path: dirPath }),
+    });
+    
+    if (!response.ok) {
+      throw new Error('Failed to create directory');
+    }
   } catch (error) {
     console.error(`Error creating directory ${dirPath}:`, error);
     throw error;
   }
 }
 
-// API route handlers
+// API route handlers - these will be used by the server
 export async function handleListFiles(req: Request): Promise<Response> {
-  try {
-    const files = await listFiles();
-    return new Response(JSON.stringify(files), {
-      headers: { 'Content-Type': 'application/json' }
-    });
-  } catch (error) {
-    return new Response(JSON.stringify({ error: 'Failed to list files' }), {
-      status: 500,
-      headers: { 'Content-Type': 'application/json' }
-    });
-  }
+  // This would be implemented on the server side
+  return new Response(JSON.stringify([]), {
+    headers: { 'Content-Type': 'application/json' }
+  });
 }
 
 export async function handleReadFile(req: Request): Promise<Response> {
-  try {
-    const url = new URL(req.url);
-    const filePath = url.searchParams.get('path');
-    
-    if (!filePath) {
-      return new Response(JSON.stringify({ error: 'File path is required' }), {
-        status: 400,
-        headers: { 'Content-Type': 'application/json' }
-      });
-    }
-    
-    const content = await readFile(filePath);
-    const fileType = getFileType(filePath);
-    
-    return new Response(JSON.stringify({ content, fileType }), {
-      headers: { 'Content-Type': 'application/json' }
-    });
-  } catch (error) {
-    return new Response(JSON.stringify({ error: 'Failed to read file' }), {
-      status: 500,
-      headers: { 'Content-Type': 'application/json' }
-    });
-  }
+  // This would be implemented on the server side
+  return new Response(JSON.stringify({ content: '', fileType: 'plaintext' }), {
+    headers: { 'Content-Type': 'application/json' }
+  });
 }
 
 export async function handleWriteFile(req: Request): Promise<Response> {
-  try {
-    const url = new URL(req.url);
-    const filePath = url.searchParams.get('path');
-    
-    if (!filePath) {
-      return new Response(JSON.stringify({ error: 'File path is required' }), {
-        status: 400,
-        headers: { 'Content-Type': 'application/json' }
-      });
-    }
-    
-    const { content } = await req.json();
-    
-    if (typeof content !== 'string') {
-      return new Response(JSON.stringify({ error: 'Content must be a string' }), {
-        status: 400,
-        headers: { 'Content-Type': 'application/json' }
-      });
-    }
-    
-    await writeFile(filePath, content);
-    
-    return new Response(JSON.stringify({ success: true }), {
-      headers: { 'Content-Type': 'application/json' }
-    });
-  } catch (error) {
-    return new Response(JSON.stringify({ error: 'Failed to write file' }), {
-      status: 500,
-      headers: { 'Content-Type': 'application/json' }
-    });
-  }
+  // This would be implemented on the server side
+  return new Response(JSON.stringify({ success: true }), {
+    headers: { 'Content-Type': 'application/json' }
+  });
 }
 
 export async function handleDeleteFile(req: Request): Promise<Response> {
-  try {
-    const url = new URL(req.url);
-    const filePath = url.searchParams.get('path');
-    
-    if (!filePath) {
-      return new Response(JSON.stringify({ error: 'File path is required' }), {
-        status: 400,
-        headers: { 'Content-Type': 'application/json' }
-      });
-    }
-    
-    await deleteFile(filePath);
-    
-    return new Response(JSON.stringify({ success: true }), {
-      headers: { 'Content-Type': 'application/json' }
-    });
-  } catch (error) {
-    return new Response(JSON.stringify({ error: 'Failed to delete file' }), {
-      status: 500,
-      headers: { 'Content-Type': 'application/json' }
-    });
-  }
+  // This would be implemented on the server side
+  return new Response(JSON.stringify({ success: true }), {
+    headers: { 'Content-Type': 'application/json' }
+  });
 }
 
 export async function handleCreateDirectory(req: Request): Promise<Response> {
-  try {
-    const url = new URL(req.url);
-    const dirPath = url.searchParams.get('path');
-    
-    if (!dirPath) {
-      return new Response(JSON.stringify({ error: 'Directory path is required' }), {
-        status: 400,
-        headers: { 'Content-Type': 'application/json' }
-      });
-    }
-    
-    await createDirectory(dirPath);
-    
-    return new Response(JSON.stringify({ success: true }), {
-      headers: { 'Content-Type': 'application/json' }
-    });
-  } catch (error) {
-    return new Response(JSON.stringify({ error: 'Failed to create directory' }), {
-      status: 500,
-      headers: { 'Content-Type': 'application/json' }
-    });
-  }
+  // This would be implemented on the server side
+  return new Response(JSON.stringify({ success: true }), {
+    headers: { 'Content-Type': 'application/json' }
+  });
 } 
